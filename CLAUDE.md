@@ -96,6 +96,82 @@ written (today's session was already running when the fix landed, so —
 same Session-0/S4U restart limitation as the 2026-09-09 fixes — it applies
 from tomorrow's fresh launch onward).
 
+## Status update — 2026-09-16/17: migrated off local Task Scheduler to GitHub Actions
+
+**Why**: the event log showed this laptop's lid actually closing/reopening
+dozens of times during trading hours on 2026-09-16 (not just sitting
+idle) — Windows' post-wake task catch-up (`0x800710E0`) can't reliably
+survive that much cycling. The agent missed all of 2026-09-15 and started
+hours late on 2026-09-16, during a stretch where NVDA moved meaningfully
+against the open put (unrealized loss ~$275 at the time — not a rule
+violation, just unmonitored). Separately, the local daily-review script's
+`claude` OAuth session expired and can't be fixed non-interactively.
+
+**What changed**:
+- **`tickOnce.ts`** (new): a one-shot entry point for cron — checks
+  `marketHours.ts`'s `isMarketOpenNow()`, no-ops if closed, otherwise calls
+  `main.ts`'s already-exported `tick()` once and exits. Unlike `main()`'s
+  loop, it does NOT swallow a `tick()` error — letting the process exit
+  non-zero surfaces it as a red run in the Actions UI, which matters more
+  here since there's no in-process retry 15 minutes later.
+- **`.github/workflows/wheel-agent.yml`** (new): cron `*/15 13-21 * * 1-5`
+  (a wide UTC window covering 9:30am-4:00pm ET across both EDT/EST, so it
+  never needs seasonal edits — off-hours runs just no-op cheaply via the
+  gate above) + `workflow_dispatch` for manual runs. One short job per
+  tick (~1 min), not one job held open all day like the sibling
+  `webull-agent` project's `agent.yml` — deliberately, to fit inside
+  GitHub's free Actions minutes (see cost note below). Commits
+  `wheel-state.json`/`wheel-trades.jsonl` back after each run (`if:
+  always()`, same as the sibling project) so state survives the ephemeral
+  runner filesystem.
+- **Daily review dropped entirely**, per explicit user choice — no clean
+  way to run the `claude -p` review in Actions without new cost/setup (an
+  Anthropic API key). Status checks are on-demand via conversation instead,
+  reading the git-committed trade log — this is what the last several days
+  of this conversation already did successfully anyway.
+- **Repo is PUBLIC**, not private as originally planned — forced pivot, see
+  below. Credentials are unaffected either way: they're GitHub encrypted
+  secrets (`WEBULL_APP_KEY`/`SECRET`/`BASE_URL`/`SANDBOX_ACCOUNT_ID`),
+  confirmed live to show as `***` in run logs regardless of repo
+  visibility. What IS now public: the strategy code and
+  `wheel-trades.jsonl`/`wheel-state.json` (paper-account premiums/
+  positions, not real money) — same trade-off the sibling project already
+  accepted for its own repo.
+
+**The private-repo attempt hit a real wall first**: this GitHub account has
+every product's spending budget set to `$0` with "stop usage" enabled
+(Actions included), so `workflow_dispatch` on the freshly-created private
+repo failed immediately with "recent account payments have failed or your
+spending limit needs to be increased" — before using a single billable
+minute. Raising the budget itself asked for a credit card, which the user
+declined to add. **Public repos bypass this entirely**: GitHub-hosted
+Actions runners on public repos are unmetered/unlimited regardless of
+account budget settings — confirmed live, the identical workflow succeeded
+immediately (7s no-op run) after flipping visibility with `gh repo edit
+--visibility public --accept-visibility-change-consequences`. This is now
+genuinely $0/month, with no card and no budget dependency at all (stronger
+than the original private-repo plan, which still depended on staying under
+2,000 free minutes).
+
+**Verified so far**: an off-hours `workflow_dispatch` run correctly logged
+`[tickOnce] market not open right now — nothing to do, exiting` and
+completed cleanly. **Not yet verified**: a real in-market-hours tick via
+Actions (reconciling the existing position, running the profit-take check,
+etc.) — first real cron tick during market hours is that test.
+
+**Critical cutover, not yet done as of this writing**: the four local
+scheduled tasks (`WebullWheelAgent`, `WebullPreventLidSleep`,
+`WebullRestoreLidSleep`, `WebullWheelDailyReview`) must be disabled before
+the next local trigger time, so local and Actions never both act on the
+same position in the same window. Requires an elevated PowerShell (same
+admin requirement as their original registration):
+```
+schtasks /Change /TN "WebullWheelAgent" /Disable
+schtasks /Change /TN "WebullPreventLidSleep" /Disable
+schtasks /Change /TN "WebullRestoreLidSleep" /Disable
+schtasks /Change /TN "WebullWheelDailyReview" /Disable
+```
+
 ## Status update — 2026-09-09 (first real scheduled run)
 
 `WebullWheelAgent` fired at 6:25am Pacific and sold the first real cycle at
