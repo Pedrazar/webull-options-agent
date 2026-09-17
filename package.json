@@ -1,0 +1,20 @@
+{
+  "name": "webull-options-agent",
+  "version": "1.0.0",
+  "description": "NVDA options wheel strategy agent against Webull's OpenAPI sandbox (paper trading) — sibling project to webull-agent, reusing its signed-client/scheduling/logging conventions.",
+  "main": "main.ts",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "devDependencies": {
+    "@types/node": "^26.2.0",
+    "dotenv": "^17.4.2",
+    "ts-node": "^10.9.2",
+    "tsx": "^4.23.12",
+    "typescript": "^7.0.2"
+  }
+}

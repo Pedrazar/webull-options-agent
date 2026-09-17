@@ -1,0 +1,80 @@
+name: Wheel agent
+
+# One short job per tick, not one long-running job per day (unlike the
+# sibling webull-agent project's "agent.yml") — this strategy only needs a
+# check every 15 minutes, so keeping each run to a couple minutes keeps
+# total monthly Actions minutes comfortably inside GitHub's free tier on a
+# private repo (~26 runs/trading-day * ~1 min each ≈ 520 min/month, vs.
+# ~350 min/day for a held-open job).
+#
+# Cron window is 13:00-21:59 UTC weekdays — covers 9:30am-4:00pm ET in both
+# EDT (13:30-20:00 UTC) and EST (14:30-21:00 UTC) with margin on both ends,
+# so it never needs seasonal editing. tickOnce.ts's own isMarketOpenNow()
+# check no-ops any run outside the real session (including the pre-open
+# minutes this wider window intentionally covers) — cheap, since a no-op
+# run exits almost immediately without touching the network.
+#
+# The sibling project's own CLAUDE.md documents GitHub silently delaying
+# scheduled (cron) triggers by hours under load, sometimes for ALL of a
+# repo's scheduled runs at once — their fix was an external cron-job.org
+# trigger hitting workflow_dispatch instead, since that path isn't subject
+# to the delay. Not adopted here (yet): a delayed tick just means a later
+# check-in, not a missed whole day like their single-daily-trigger design,
+# so the risk is much lower for a 15-minute-cadence strategy. Revisit if
+# ticks are observed bunching up or going missing for a whole session.
+on:
+  schedule:
+    - cron: "*/15 13-21 * * 1-5"
+  workflow_dispatch: {}
+
+concurrency:
+  group: wheel-agent
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - run: npm ci
+
+      - name: Run one tick
+        env:
+          WEBULL_APP_KEY: ${{ secrets.WEBULL_APP_KEY }}
+          WEBULL_APP_SECRET: ${{ secrets.WEBULL_APP_SECRET }}
+          WEBULL_BASE_URL: ${{ secrets.WEBULL_BASE_URL }}
+          WEBULL_SANDBOX_ACCOUNT_ID: ${{ secrets.WEBULL_SANDBOX_ACCOUNT_ID }}
+          WHEEL_SYMBOL: NVDA
+          WHEEL_CONTRACTS: "5"
+          WHEEL_PUT_OTM_PCT: "0.10"
+          WHEEL_CALL_ITM_PCT: "0.10"
+          WHEEL_DTE_MIN: "14"
+          WHEEL_DTE_MAX: "28"
+          WHEEL_PROFIT_TAKE_PCT: "0.50"
+        run: npx tsx tickOnce.ts
+
+      # Runs even if the tick step failed, so a partial write isn't lost
+      # with the ephemeral runner filesystem — same pattern as the sibling
+      # project's agent.yml.
+      - name: Commit state + trade log
+        if: always()
+        run: |
+          git config user.name "webull-options-agent"
+          git config user.email "actions@users.noreply.github.com"
+          git add wheel-state.json wheel-trades.jsonl
+          if git diff --cached --quiet; then
+            echo "nothing to commit"
+          else
+            git commit -m "wheel agent tick $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            git pull --rebase origin main
+            git push origin HEAD:main
+          fi
