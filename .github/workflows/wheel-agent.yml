@@ -7,24 +7,36 @@ name: Wheel agent
 # private repo (~26 runs/trading-day * ~1 min each ≈ 520 min/month, vs.
 # ~350 min/day for a held-open job).
 #
-# Cron window is 13:00-21:59 UTC weekdays — covers 9:30am-4:00pm ET in both
-# EDT (13:30-20:00 UTC) and EST (14:30-21:00 UTC) with margin on both ends,
-# so it never needs seasonal editing. tickOnce.ts's own isMarketOpenNow()
-# check no-ops any run outside the real session (including the pre-open
-# minutes this wider window intentionally covers) — cheap, since a no-op
-# run exits almost immediately without touching the network.
+# The actual 15-minute cadence during market hours is driven entirely by
+# an external cron-job.org job hitting this workflow's `workflow_dispatch`
+# REST endpoint (see below) — this file has no `schedule:` trigger of its
+# own. cron-job.org's schedule is wider than the exact market session with
+# margin on both ends (roughly 6:00am-2:00pm Pacific, weekdays), so
+# tickOnce.ts's own isMarketOpenNow() check no-ops any run outside the real
+# 9:30am-4:00pm ET session — cheap, exits almost immediately.
 #
-# The sibling project's own CLAUDE.md documents GitHub silently delaying
-# scheduled (cron) triggers by hours under load, sometimes for ALL of a
-# repo's scheduled runs at once — their fix was an external cron-job.org
-# trigger hitting workflow_dispatch instead, since that path isn't subject
-# to the delay. Not adopted here (yet): a delayed tick just means a later
-# check-in, not a missed whole day like their single-daily-trigger design,
-# so the risk is much lower for a 15-minute-cadence strategy. Revisit if
-# ticks are observed bunching up or going missing for a whole session.
+# CONFIRMED LIVE 2026-09-17: the sibling project's documented GitHub
+# scheduled-trigger delay hit here too — only 3 of the expected ~26 runs
+# fired that day, 3 hours apart instead of 15 minutes, missing the first
+# ~4 hours of the session entirely. Fixed 2026-09-17 the same way the
+# sibling project did: an external cron-job.org job hitting this
+# workflow's `workflow_dispatch` REST endpoint every 15 minutes (not
+# subject to the delay) using a fine-grained PAT scoped to just this repo.
+#
+# CONFIRMED LIVE 2026-09-18: keeping the native `schedule:` trigger as a
+# "harmless backup" was NOT harmless — it's aligned to the same 15-minute
+# boundaries as the cron-job.org trigger, so the two collided within
+# seconds of each other at 17:00 UTC. `concurrency` below correctly
+# serialized them (no parallel tick() calls, no double-order risk), but
+# the second run's commit-back step still hit a genuine `git rebase`
+# conflict on wheel-state.json and failed outright (no trading impact —
+# that tick was just a routine "hold" check, nothing lost). Removed the
+# `schedule:` trigger entirely rather than patching the commit logic,
+# since cron-job.org alone already proved reliable (35 of 36 runs
+# succeeded on 2026-09-18, the one failure being exactly this collision)
+# and a redundant trigger firing on the exact same cadence has no real
+# backup value anyway.
 on:
-  schedule:
-    - cron: "*/15 13-21 * * 1-5"
   workflow_dispatch: {}
 
 concurrency:
