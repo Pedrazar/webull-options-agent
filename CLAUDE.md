@@ -124,11 +124,13 @@ violation, just unmonitored). Separately, the local daily-review script's
   `wheel-state.json`/`wheel-trades.jsonl` back after each run (`if:
   always()`, same as the sibling project) so state survives the ephemeral
   runner filesystem.
-- **Daily review dropped entirely**, per explicit user choice — no clean
-  way to run the `claude -p` review in Actions without new cost/setup (an
-  Anthropic API key). Status checks are on-demand via conversation instead,
-  reading the git-committed trade log — this is what the last several days
-  of this conversation already did successfully anyway.
+- **Automated daily review dropped entirely**, per explicit user choice —
+  no clean way to run the `claude -p` review in Actions without new
+  cost/setup (an Anthropic API key). **Update 2026-09-19**: reviews are
+  still written to `daily-reviews/YYYY-MM-DD.md` (same convention/format
+  as the old automated ones), but on-demand only, by hand in conversation
+  when asked ("how did we do") — no scheduled pipeline, no ongoing cost.
+  First one written this way: `daily-reviews/2026-09-18.md`.
 - **Repo is PUBLIC**, not private as originally planned — forced pivot, see
   below. Credentials are unaffected either way: they're GitHub encrypted
   secrets (`WEBULL_APP_KEY`/`SECRET`/`BASE_URL`/`SANDBOX_ACCOUNT_ID`),
