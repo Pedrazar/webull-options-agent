@@ -1,8 +1,15 @@
 {
   "stage": "PUT",
-  "openOption": null,
+  "openOption": {
+    "optionSymbol": "NVDA261016P00200000",
+    "strike": 200,
+    "expiration": "2026-10-16",
+    "optionType": "PUT",
+    "contracts": 5,
+    "creditPerContract": 1.04
+  },
   "shares": 0,
   "costBasis": null,
   "cumulativePremium": 330.0000000000001,
-  "updatedAt": "2026-09-21T14:00:21.048Z"
+  "updatedAt": "2026-09-21T14:15:16.541Z"
 }
