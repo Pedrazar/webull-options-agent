@@ -179,17 +179,35 @@ async function sellToOpen(
     // can fill BETTER than the bid (that day's fill was $1.11 vs. a $1.08
     // bid) — logging the requested limit price as "the credit" understates
     // the real number. Poll for the actual fill (same pattern as the
-    // sibling project's pollOrderFill) and prefer that; fall back to the
-    // requested price only if the poll times out, so the log still has a
-    // number rather than nothing.
+    // sibling project's pollOrderFill) and prefer that over the requested
+    // price.
+    //
+    // CONFIRMED LIVE 2026-09-21: an order can be placed successfully (a
+    // client_order_id comes back) and still never fill — that day's order
+    // came back CANCELLED with filled_quantity 0, but the OLD version of
+    // this function returned {ok: true} unconditionally anyway, so the
+    // caller logged put_sold with a fabricated $625 credit for a position
+    // that never existed. Caught only because the NEXT tick's reconcile()
+    // (broker truth) found no position and correctly sold again — the
+    // trading behavior self-healed, but the trade log was wrong. Now
+    // returns {ok: false} whenever the fill isn't confirmed FILLED, so the
+    // caller logs an honest guard_rejected instead of a phantom sale.
     const fill = await pollOptionOrderFill(client, accountId, clientOrderId);
-    const creditPerContract = fill?.filledPrice ?? bid;
     if (!fill || fill.status !== "FILLED") {
-      console.warn(
-        `[order] fill for ${contract.symbol} not confirmed within poll window, logging requested limit price ${bid} instead of a confirmed fill`
-      );
+      const detail = fill
+        ? `order ${clientOrderId} for ${contract.symbol} ended in status ${fill.status} (filled_quantity ${fill.filledQuantity}), not FILLED`
+        : `order ${clientOrderId} for ${contract.symbol} did not reach a terminal status within the poll window`;
+      console.warn(`[order] ${detail}`);
+      logTradeEvent({
+        event: "guard_rejected",
+        symbol: SYMBOL,
+        stage: optionType === "PUT" ? "PUT" : "CALL",
+        reason: "order_not_filled",
+        detail,
+      });
+      return { ok: false };
     }
-    return { ok: true, contract, creditPerContract, clientOrderId };
+    return { ok: true, contract, creditPerContract: fill.filledPrice ?? bid, clientOrderId };
   } catch (err) {
     console.error(`[order] SELL_TO_OPEN ${optionType} failed:`, err);
     logTradeEvent({
@@ -227,16 +245,28 @@ async function buyToClose(
       positionIntent: "BUY_TO_CLOSE",
     });
     // Same fix as the sell paths: prefer the confirmed fill over the
-    // requested limit price for an accurate realized-P&L log.
+    // requested limit price. Same 2026-09-21 gate too — only report success
+    // if the fill is actually confirmed FILLED, otherwise the caller would
+    // log a closed_early event (and realized P&L) for a close that never
+    // happened (see CLAUDE.md for the live incident this fixes, found on
+    // the sell side but structurally identical here).
     const clientOrderId = (result.client_order_id as string) ?? "";
     const fill = await pollOptionOrderFill(client, accountId, clientOrderId);
-    const debit = fill?.filledPrice ?? ask;
     if (!fill || fill.status !== "FILLED") {
-      console.warn(
-        `[order] fill for ${opt.optionSymbol} BUY_TO_CLOSE not confirmed within poll window, logging requested limit price ${ask} instead of a confirmed fill`
-      );
+      const detail = fill
+        ? `order ${clientOrderId} for ${opt.optionSymbol} BUY_TO_CLOSE ended in status ${fill.status} (filled_quantity ${fill.filledQuantity}), not FILLED`
+        : `order ${clientOrderId} for ${opt.optionSymbol} BUY_TO_CLOSE did not reach a terminal status within the poll window`;
+      console.warn(`[order] ${detail}`);
+      logTradeEvent({
+        event: "guard_rejected",
+        symbol: SYMBOL,
+        stage: optionType,
+        reason: "order_not_filled",
+        detail,
+      });
+      return { ok: false };
     }
-    return { ok: true, debit };
+    return { ok: true, debit: fill.filledPrice ?? ask };
   } catch (err) {
     console.error(`[order] BUY_TO_CLOSE ${optionType} failed:`, err);
     return { ok: false };
@@ -468,15 +498,20 @@ export async function tick(client: WebullClient, accountId: string): Promise<voi
       });
       const clientOrderId = (result.client_order_id as string) ?? "";
       // Same fix as sellToOpen() for puts: prefer the confirmed fill price
-      // over the requested limit price — a limit sell at the bid can fill
-      // better than the bid, so logging the bid understates real credit.
+      // over the requested limit price. Same 2026-09-21 gate too — only log
+      // call_sold if the fill is actually confirmed FILLED; a placed order
+      // that ends up CANCELLED/REJECTED (or unconfirmed) must not be logged
+      // as a sale (see CLAUDE.md for the live incident this fixes).
       const fill = await pollOptionOrderFill(client, accountId, clientOrderId);
-      const creditPerContract = fill?.filledPrice ?? bid;
       if (!fill || fill.status !== "FILLED") {
-        console.warn(
-          `[order] fill for ${contract.symbol} not confirmed within poll window, logging requested limit price ${bid} instead of a confirmed fill`
-        );
+        const detail = fill
+          ? `order ${clientOrderId} for ${contract.symbol} ended in status ${fill.status} (filled_quantity ${fill.filledQuantity}), not FILLED`
+          : `order ${clientOrderId} for ${contract.symbol} did not reach a terminal status within the poll window`;
+        console.warn(`[order] ${detail}`);
+        logTradeEvent({ event: "guard_rejected", symbol: SYMBOL, stage: "CALL", reason: "order_not_filled", detail });
+        return;
       }
+      const creditPerContract = fill.filledPrice ?? bid;
       const totalCredit = creditPerContract * CONTRACTS * 100;
       logTradeEvent({
         event: "call_sold",

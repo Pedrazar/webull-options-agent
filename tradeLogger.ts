@@ -100,7 +100,18 @@ export type WheelEvent =
       event: "guard_rejected";
       symbol: string;
       stage: "PUT" | "CALL";
-      reason: "insufficient_cash" | "strike_below_cost_basis" | "no_suitable_contract" | "preview_failed";
+      reason:
+        | "insufficient_cash"
+        | "strike_below_cost_basis"
+        | "no_suitable_contract"
+        | "preview_failed"
+        // Added 2026-09-21 after a real live incident: an order was placed,
+        // never filled (broker returned status CANCELLED, filled_quantity
+        // 0), but the code logged put_sold anyway with a fabricated credit
+        // number — see CLAUDE.md. Used when placeOptionOrder() succeeds but
+        // the poll never confirms an actual FILLED status, for any of
+        // sell-to-open (put or call) or buy-to-close.
+        | "order_not_filled";
       detail: string;
     };
 
