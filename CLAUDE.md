@@ -41,6 +41,45 @@ Task Scheduler jobs were then registered the same day. **See the
 2026-09-09 status update below for what happened on the first real
 scheduled run** — a real fill, and a same-day bugfix.
 
+## Status update — 2026-09-21 (first completed cycle + a real accuracy bug)
+
+**First full wheel cycle completed, profitably.** The 50%-profit-take check
+triggered at market open: the original put (sold 2026-09-09, $1.11/contract)
+was bought back at $0.45/contract — `creditReceived $555, debitPaid $225,
+realizedPnl $330, pctOfCreditCaptured 59.5%`. `cumulativePremium` is now
+correctly `$330`. A new put was then sold to start the next cycle: 5x
+`NVDA261016P00200000` (strike $200, exp 2026-10-16) at $1.04/contract =
+$520 credit.
+
+**Bug found and fixed the same day**: the very first attempt to sell the
+new put (13:45 UTC) got a `client_order_id` back and was logged as
+`put_sold` with a $1.25 credit ($625 total) — but `getOrderDetail()`
+confirms it actually ended `status: CANCELLED, filled_quantity: 0`. It
+never became a real position. The next tick (13:45 → 14:00) correctly saw
+no open option via `reconcile()` (broker truth) and sold again, this time
+successfully — so **the actual trading was never wrong** (no double
+position, confirmed live: exactly 5 contracts held, matching only the
+second order), but the trade log briefly had a phantom entry claiming
+$625 was collected when the real number was $520.
+
+Root cause: `sellToOpen()`/the inline call-sell path/`buyToClose()` all
+polled for the fill (the 2026-09-09 fix) but never actually gated on the
+result — they logged success (falling back to the requested limit price)
+even when the poll came back CANCELLED, REJECTED, or simply unconfirmed.
+**Fixed**: all three now return/report failure whenever
+`pollOptionOrderFill()` doesn't confirm `status: FILLED`, logging an
+honest `guard_rejected(reason: "order_not_filled")` instead of a
+fabricated sale. Per this project's append-only trade-log convention, the
+old phantom `put_sold` entry from 13:45 was NOT deleted/edited — it's
+still in `wheel-trades.jsonl` as a historical record, just now understood
+to be wrong; treat any `put_sold`/`call_sold` entry dated before this fix
+with slightly more skepticism than the live position if the two ever seem
+to disagree (the position is always the ground truth, per `reconcile()`'s
+own design philosophy).
+
+Not yet re-verified live (no order has been placed since this fix landed)
+— the next real sell or early-close is the verification.
+
 ## Status update — 2026-09-09, evening (daily review findings + a 3rd bugfix)
 
 The 1:20pm Pacific `WebullWheelDailyReview` ran and correctly flagged two
