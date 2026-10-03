@@ -44,6 +44,24 @@ export interface WheelState {
   cumulativePremium: number;
 }
 
+/** A BUY_TO_CLOSE order whose fill status couldn't be confirmed within the
+ * poll window — CONFIRMED LIVE 2026-10-02: an order can take far longer to
+ * settle than any reasonable poll window (that day, 13 minutes) and still
+ * end up FILLED. Without this, the close was silently dropped from the log
+ * and `cumulativePremium` permanently undercounted a real realized gain —
+ * reconcile() already correctly picks up the position being gone on the
+ * next tick (broker truth), but nothing else ever recomputed the P&L for
+ * it. main.ts's resolvePendingClose() checks this order's real status each
+ * tick until it resolves, then logs the correct event and clears this. */
+export interface PendingClose {
+  clientOrderId: string;
+  optionSymbol: string;
+  optionType: "PUT" | "CALL";
+  contracts: number;
+  creditPerContract: number;
+  placedAt: string;
+}
+
 const STATE_PATH = path.join(__dirname, "wheel-state.json");
 
 function loadCumulativePremium(): number {
@@ -64,6 +82,25 @@ export function addCumulativePremium(delta: number): void {
   }
   const cumulativePremium = ((raw.cumulativePremium as number) ?? 0) + delta;
   fs.writeFileSync(STATE_PATH, JSON.stringify({ ...raw, cumulativePremium }, null, 2));
+}
+
+export function loadPendingClose(): PendingClose | null {
+  try {
+    const raw = JSON.parse(fs.readFileSync(STATE_PATH, "utf8"));
+    return raw.pendingClose ?? null;
+  } catch {
+    return null;
+  }
+}
+
+export function setPendingClose(pending: PendingClose | null): void {
+  let raw: Record<string, unknown> = {};
+  try {
+    raw = JSON.parse(fs.readFileSync(STATE_PATH, "utf8"));
+  } catch {
+    // no snapshot yet — fine, start from empty
+  }
+  fs.writeFileSync(STATE_PATH, JSON.stringify({ ...raw, pendingClose: pending }, null, 2));
 }
 
 /**
@@ -113,7 +150,15 @@ export async function reconcile(client: WebullClient, accountId: string, symbol:
 
   const stage: Stage = shares > 0 ? "CALL" : "PUT";
 
+  // pendingClose isn't part of WheelState (it's not broker-truth, it's local
+  // bookkeeping for an order whose fill is still being confirmed) but this
+  // write would otherwise silently drop it, since it overwrites the whole
+  // file rather than merging — same pattern as cumulativePremium above.
+  const pendingClose = loadPendingClose();
   const state: WheelState = { stage, openOption, shares, costBasis, cumulativePremium };
-  fs.writeFileSync(STATE_PATH, JSON.stringify({ ...state, updatedAt: new Date().toISOString() }, null, 2));
+  fs.writeFileSync(
+    STATE_PATH,
+    JSON.stringify({ ...state, pendingClose, updatedAt: new Date().toISOString() }, null, 2)
+  );
   return state;
 }

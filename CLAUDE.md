@@ -41,6 +41,53 @@ Task Scheduler jobs were then registered the same day. **See the
 2026-09-09 status update below for what happened on the first real
 scheduled run** — a real fill, and a same-day bugfix.
 
+## Status update — 2026-10-02 (a real close silently dropped, found and fixed)
+
+The 2026-09-21 fix made `order_not_filled` a hard gate: a close only logs
+`put_closed_early`/`call_closed_early` if `pollOptionOrderFill()` confirms
+`FILLED` within the poll window. That window is short (a handful of
+seconds). **CONFIRMED LIVE 2026-10-02**: a `BUY_TO_CLOSE` on
+`NVDA261023P00205000` didn't confirm within the window and correctly
+logged `guard_rejected(order_not_filled)` — but checking the broker's own
+order record directly afterward showed `status: FILLED, filled_price:
+0.50, filled_time_at: 14:13:22Z`, a full **13 minutes** after it was
+placed (`place_time_at: 14:00:31Z`). The close was real (a clean 50%
+profit-take, exactly as intended) and the next tick's `reconcile()`
+correctly found the position gone and sold the next put — so the actual
+*trading* was never wrong. But nothing ever logged the real close or added
+its $250 realized gain to `cumulativePremium`, which sat silently $250
+low until this was caught.
+
+**Fixed**: `wheelState.ts` gained a `pendingClose` field (persisted in
+`wheel-state.json`, surviving `reconcile()`'s overwrite the same way
+`cumulativePremium` does) — when a close's fill is genuinely unresolved
+(not a definite CANCELLED/REJECTED, just unknown), `buyToClose()` now
+persists enough to resolve it later instead of discarding the information.
+`main.ts`'s new `resolvePendingClose()` runs at the very start of every
+`tick()`, checks that order's real status, and — if it turns out FILLED —
+logs the correct event with the real `filled_price` and updates
+`cumulativePremium`, exactly like this should have happened the first
+time. A definite CANCELLED/REJECTED just clears the pending record (no
+further log needed, `guard_rejected` already covered it).
+
+**Known, deliberate asymmetry**: the identical ambiguity exists on the
+*open* side (`sellToOpen()`/the inline call-sell path) — an unconfirmed
+`SELL_TO_OPEN` that later fills would similarly miss its `put_sold`/
+`call_sold` log entry. Not fixed here: unlike the close side, `reconcile()`
+already reads the position's real credit directly from the broker's own
+`cost_price` regardless of whether an entry event was logged, so the only
+casualty there is a missing audit-trail line, not a `cumulativePremium`
+miscalculation — a real gap, just a much smaller one. Revisit if it
+actually causes confusion.
+
+**2026-10-02's trade log entry for this backfilled close is timestamped
+when it was backfilled (evening of 2026-10-02 / Oct 3 UTC), not the real
+14:13:22Z fill time** — `logTradeEvent()` always stamps "now," and
+backfilling a historical timestamp wasn't worth adding for a one-off
+correction. If a future review's date-filtering looks confused about an
+`NVDA261023P00205000` `put_closed_early` appearing on the "wrong" day,
+this is why.
+
 ## Status update — 2026-09-21 (first completed cycle + a real accuracy bug)
 
 **First full wheel cycle completed, profitably.** The 50%-profit-take check

@@ -24,9 +24,10 @@ import {
   extractOptionBuyingPower,
   placeOptionOrder,
   pollOptionOrderFill,
+  getOrderDetail,
   OptionContract,
 } from "./optionsClient";
-import { reconcile, addCumulativePremium, WheelState } from "./wheelState";
+import { reconcile, addCumulativePremium, loadPendingClose, setPendingClose, WheelState } from "./wheelState";
 import { logTradeEvent } from "./tradeLogger";
 import { isMarketHoliday, isAtOrAfterMarketClose, waitForMarketOpen, todayNyDate } from "./marketHours";
 
@@ -264,6 +265,23 @@ async function buyToClose(
         reason: "order_not_filled",
         detail,
       });
+      // CONFIRMED LIVE 2026-10-02: a genuinely unresolved order (fill===null,
+      // not a definite CANCELLED/REJECTED) can still go on to fill much later
+      // (that day, 13 minutes — far past any reasonable poll window) — see
+      // CLAUDE.md. A definite CANCELLED/REJECTED needs no further tracking
+      // (nothing more will ever happen to it), but an unresolved one gets
+      // persisted so resolvePendingClose() can check it again on a later
+      // tick and log the real outcome instead of silently losing it.
+      if (!fill) {
+        setPendingClose({
+          clientOrderId,
+          optionSymbol: opt.optionSymbol,
+          optionType,
+          contracts: opt.contracts,
+          creditPerContract: opt.creditPerContract!,
+          placedAt: new Date().toISOString(),
+        });
+      }
       return { ok: false };
     }
     return { ok: true, debit: fill.filledPrice ?? ask };
@@ -273,7 +291,53 @@ async function buyToClose(
   }
 }
 
+/** Checks a previously-unresolved BUY_TO_CLOSE order's real status, logging
+ * the correct closed_early event (and updating cumulativePremium) if it
+ * turns out to have FILLED, or just clearing the pending record if it's now
+ * definitively CANCELLED/REJECTED. Leaves it in place (checked again next
+ * tick) if still not in a terminal state — DAY orders bound this to the
+ * same trading day regardless. See CLAUDE.md for the 2026-10-02 incident
+ * this exists to fix. */
+async function resolvePendingClose(client: WebullClient, accountId: string): Promise<void> {
+  const pending = loadPendingClose();
+  if (!pending) return;
+
+  const detail = (await getOrderDetail(client, accountId, pending.clientOrderId)).orders?.[0];
+  const status = detail?.status;
+  if (!status || !["FILLED", "CANCELLED", "REJECTED"].includes(status)) {
+    console.log(`[pending-close] ${pending.clientOrderId} still ${status ?? "unknown"}, checking again next tick`);
+    return;
+  }
+
+  if (status === "FILLED") {
+    const filledPrice = detail?.filled_price ? parseFloat(detail.filled_price) : null;
+    const creditReceived = pending.creditPerContract * pending.contracts * 100;
+    const debitPaid = (filledPrice ?? pending.creditPerContract) * pending.contracts * 100;
+    const realizedPnl = creditReceived - debitPaid;
+    addCumulativePremium(realizedPnl);
+    logTradeEvent({
+      event: pending.optionType === "PUT" ? "put_closed_early" : "call_closed_early",
+      symbol: SYMBOL,
+      optionSymbol: pending.optionSymbol,
+      creditReceived,
+      debitPaid,
+      realizedPnl,
+      pctOfCreditCaptured: creditReceived > 0 ? realizedPnl / creditReceived : 0,
+    });
+    console.log(
+      `[pending-close] ${pending.clientOrderId} resolved FILLED @ ${filledPrice} — logged the real close (took ${(
+        (Date.now() - new Date(pending.placedAt).getTime()) /
+        60_000
+      ).toFixed(1)} min to settle)`
+    );
+  } else {
+    console.log(`[pending-close] ${pending.clientOrderId} resolved ${status} — already logged when first detected, nothing more to do`);
+  }
+  setPendingClose(null);
+}
+
 export async function tick(client: WebullClient, accountId: string): Promise<void> {
+  await resolvePendingClose(client, accountId);
   const state = await reconcile(client, accountId, SYMBOL);
   console.log(
     `[tick] stage=${state.stage} shares=${state.shares} costBasis=${state.costBasis ?? "n/a"} openOption=${
