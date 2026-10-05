@@ -11,5 +11,6 @@
   "shares": 0,
   "costBasis": null,
   "cumulativePremium": 885.0000000000001,
-  "updatedAt": "2026-10-02T19:45:20.392Z"
+  "pendingClose": null,
+  "updatedAt": "2026-10-05T13:30:25.288Z"
 }
