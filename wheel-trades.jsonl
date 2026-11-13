@@ -13,3 +13,4 @@
 {"ts":"2026-10-21T13:45:25.065Z","event":"put_sold","symbol":"NVDA","optionSymbol":"NVDA261113P00195000","strike":195,"expiration":"2026-11-13","contracts":5,"creditPerContract":1.16,"totalCredit":580,"clientOrderId":"d8bf8229ac6f43a9bd8f21ef3848fa00","underlyingPrice":220.05,"targetStrike":198.04500000000002}
 {"ts":"2026-11-13T14:30:21.585Z","event":"put_expired_worthless","symbol":"NVDA","optionSymbol":"NVDA261113P00195000","creditReceived":580}
 {"ts":"2026-11-13T14:45:17.544Z","event":"put_expired_worthless","symbol":"NVDA","optionSymbol":"NVDA261113P00195000","creditReceived":580}
+{"ts":"2026-11-13T15:00:27.116Z","event":"put_expired_worthless","symbol":"NVDA","optionSymbol":"NVDA261113P00195000","creditReceived":580}
