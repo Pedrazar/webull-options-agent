@@ -27,3 +27,4 @@
 {"ts":"2026-11-13T17:45:17.897Z","event":"put_expired_worthless","symbol":"NVDA","optionSymbol":"NVDA261113P00195000","creditReceived":580}
 {"ts":"2026-11-13T18:00:24.261Z","event":"put_expired_worthless","symbol":"NVDA","optionSymbol":"NVDA261113P00195000","creditReceived":580}
 {"ts":"2026-11-13T18:15:24.984Z","event":"put_expired_worthless","symbol":"NVDA","optionSymbol":"NVDA261113P00195000","creditReceived":580}
+{"ts":"2026-11-13T18:30:25.343Z","event":"put_expired_worthless","symbol":"NVDA","optionSymbol":"NVDA261113P00195000","creditReceived":580}
