@@ -65,6 +65,7 @@ jobs:
           WEBULL_APP_SECRET: ${{ secrets.WEBULL_APP_SECRET }}
           WEBULL_BASE_URL: ${{ secrets.WEBULL_BASE_URL }}
           WEBULL_SANDBOX_ACCOUNT_ID: ${{ secrets.WEBULL_SANDBOX_ACCOUNT_ID }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # read-only use: webull-supervisor control.json (pause switch)
           WHEEL_SYMBOL: NVDA
           WHEEL_CONTRACTS: "5"
           WHEEL_PUT_OTM_PCT: "0.10"

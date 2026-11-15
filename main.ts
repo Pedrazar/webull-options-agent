@@ -29,6 +29,7 @@ import {
 } from "./optionsClient";
 import { reconcile, addCumulativePremium, loadPendingClose, setPendingClose, WheelState } from "./wheelState";
 import { logTradeEvent } from "./tradeLogger";
+import { supervisorPause } from "./supervisorControl";
 import { isMarketHoliday, isAtOrAfterMarketClose, waitForMarketOpen, todayNyDate } from "./marketHours";
 
 const SYMBOL = process.env.WHEEL_SYMBOL ?? "NVDA";
@@ -117,6 +118,19 @@ async function sellToOpen(
   targetStrike: number,
   preferAtOrBelow: boolean
 ): Promise<SellResult> {
+  // Supervisor pause switch: blocks NEW puts and covered calls only.
+  // Buy-to-close and everything else keep running.
+  const pause = await supervisorPause("wheel");
+  if (pause.paused) {
+    logTradeEvent({
+      event: "guard_rejected",
+      symbol: SYMBOL,
+      stage: optionType === "PUT" ? "PUT" : "CALL",
+      reason: "supervisor_paused",
+      detail: pause.reason ?? "paused by supervisor",
+    });
+    return { ok: false };
+  }
   const chain = await getOptionChain(client, {
     underlyingSymbol: SYMBOL,
     optionType,

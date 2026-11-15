@@ -111,7 +111,9 @@ export type WheelEvent =
         // number — see CLAUDE.md. Used when placeOptionOrder() succeeds but
         // the poll never confirms an actual FILLED status, for any of
         // sell-to-open (put or call) or buy-to-close.
-        | "order_not_filled";
+        | "order_not_filled"
+        // The webull-supervisor pause switch (control.json) is on for "wheel".
+        | "supervisor_paused";
       detail: string;
     };
 
