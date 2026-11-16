@@ -1,9 +1,16 @@
 {
-  "stage": "CALL",
-  "openOption": null,
-  "shares": 500,
-  "costBasis": 193.84,
+  "stage": "PUT",
+  "openOption": {
+    "optionSymbol": "NVDA",
+    "strike": null,
+    "expiration": "",
+    "optionType": "PUT",
+    "contracts": 5,
+    "creditPerContract": 193.28
+  },
+  "shares": 0,
+  "costBasis": null,
   "cumulativePremium": 16150,
   "pendingClose": null,
-  "updatedAt": "2026-11-16T14:30:25.457Z"
+  "updatedAt": "2026-11-16T14:45:21.783Z"
 }
