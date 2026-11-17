@@ -41,6 +41,31 @@ Task Scheduler jobs were then registered the same day. **See the
 2026-09-09 status update below for what happened on the first real
 scheduled run** — a real fill, and a same-day bugfix.
 
+## Status update — 2026-11-17 (covered-call position misread, every tick crashing)
+
+The 2026-11-13 NVDA 195 put was assigned (500 shares, cost basis $193.84)
+and on 2026-11-16 the agent sold 5x `NVDA261211C00215000` at $0.56. From
+the next tick on, every run crashed (51 failed runs on 11-16/17): the
+broker stopped reporting a separate EQUITY position, `reconcile()` saw
+shares=0, read the stock leg (`legs[0]`) as the option, and the snapshot
+lookup for symbol "NVDA" failed with 417 INVALID_SYMBOL. **Fixed**:
+`parseWheelPositions()` (pure, tested offline by `npx tsx
+testReconcile.ts`) classifies each leg on its own and never uses a
+combined position's blended `cost_price`. The exact combined-position
+layout was not seen directly, so the parser **fails closed**: if anything
+is ambiguous, `reconcile()` throws with the raw positions in the error
+(red run, raw shape in the log) instead of guessing — a wrong guess of
+"nothing held" would otherwise sell 5 new puts on top of positions it
+can't see. First run after merge is the live verification.
+
+Same PR: expiry is now `todayNyDate() > expiration` (the old rounded
+`daysUntil() < 0` fired from ~noon UTC ON expiration day and logged
+`put_expired_worthless` + added the credit on all 26 ticks of 11-13
+while the put was ITM), the expiry event is logged once per contract, and
+`cumulativePremium` was corrected by hand from 16150 to 1650 (four early
+closes, $1,070, plus the 11-13 put's $580 credit counted once). The 26
+false 11-13 log lines stay in `wheel-trades.jsonl` (append-only).
+
 ## Status update — 2026-10-02 (a real close silently dropped, found and fixed)
 
 The 2026-09-21 fix made `order_not_filled` a hard gate: a close only logs

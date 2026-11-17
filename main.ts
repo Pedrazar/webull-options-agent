@@ -16,6 +16,8 @@
  */
 
 import "dotenv/config";
+import fs from "fs";
+import path from "path";
 import { WebullClient } from "./webullClient";
 import {
   getOptionChain,
@@ -49,6 +51,17 @@ function isoDateDaysFromNow(days: number): string {
   const d = new Date();
   d.setDate(d.getDate() + days);
   return d.toISOString().slice(0, 10);
+}
+
+function expiryAlreadyLogged(optionSymbol: string): boolean {
+  try {
+    return fs
+      .readFileSync(path.join(__dirname, "wheel-trades.jsonl"), "utf8")
+      .split("\n")
+      .some((line) => line.includes(`"optionSymbol":"${optionSymbol}"`) && line.includes("_expired_worthless"));
+  } catch {
+    return false;
+  }
 }
 
 function daysUntil(dateStr: string): number {
@@ -363,7 +376,13 @@ export async function tick(client: WebullClient, accountId: string): Promise<voi
   // regardless of stage (the same logic serves both put and call legs). ---
   if (state.openOption) {
     const opt = state.openOption;
-    const expired = daysUntil(opt.expiration) < 0;
+    // Expired only once the NY calendar date is PAST the expiration date.
+    // The old `daysUntil(expiration) < 0` rounded (expiry 00:00Z - now), so
+    // from ~noon UTC ON expiration day it already read -1: on 2026-11-13 it
+    // logged "put_expired_worthless" (and added the credit to
+    // cumulativePremium) on all 26 ticks of the day while the put was ~$32
+    // in the money and about to be assigned.
+    const expired = todayNyDate() > opt.expiration;
 
     if (opt.creditPerContract !== null) {
       const snap = await getOptionSnapshot(client, [opt.optionSymbol]);
@@ -412,7 +431,9 @@ export async function tick(client: WebullClient, accountId: string): Promise<voi
       // If shares are still absent from state.shares below, treat as
       // worthless-expiry for logging purposes; the next tick's reconcile()
       // is authoritative either way.
-      if (opt.creditPerContract !== null) {
+      // Log (and count the credit) once per contract, not once per tick
+      // while the broker is still processing the expiry.
+      if (opt.creditPerContract !== null && !expiryAlreadyLogged(opt.optionSymbol)) {
         const creditReceived = opt.creditPerContract * opt.contracts * 100;
         addCumulativePremium(creditReceived);
         logTradeEvent({
