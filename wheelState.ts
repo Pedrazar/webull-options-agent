@@ -14,7 +14,7 @@
 import fs from "fs";
 import path from "path";
 import { WebullClient } from "./webullClient";
-import { getPositions, occSymbol } from "./optionsClient";
+import { getPositions, occSymbol, Position, PositionLeg } from "./optionsClient";
 
 export type Stage = "PUT" | "CALL";
 
@@ -103,50 +103,152 @@ export function setPendingClose(pending: PendingClose | null): void {
   fs.writeFileSync(STATE_PATH, JSON.stringify({ ...raw, pendingClose: pending }, null, 2));
 }
 
+export interface ParsedPositions {
+  shares: number;
+  costBasis: number | null;
+  openOption: OpenOption | null;
+  /** Anything about the wheel symbol's positions this parser couldn't read
+   * with confidence. Non-empty means reconcile() refuses to return a state
+   * (see below) rather than guess. */
+  problems: string[];
+}
+
+function num(v: unknown): number | null {
+  if (v === undefined || v === null || v === "") return null;
+  const n = parseFloat(String(v));
+  return Number.isFinite(n) ? n : null;
+}
+
+function isOptionLeg(leg: PositionLeg): boolean {
+  const t = String(leg.instrument_type ?? "").toUpperCase();
+  if (t === "OPTION") return true;
+  if (t === "EQUITY" || t === "STOCK") return false;
+  return leg.option_type !== undefined || leg.option_exercise_price !== undefined || leg.option_expire_date !== undefined;
+}
+
 /**
- * Rebuilds WheelState from live broker positions. Positions endpoint
- * returns both the underlying stock (instrument_type EQUITY) and any open
- * option contract (instrument_type OPTION) for the account.
+ * Pure parser behind reconcile(), split out so it can be tested without the
+ * broker (testReconcile.ts).
  *
- * CONFIRMED LIVE (2026-09-09, first real fill): an option position's
- * strike/expiration/type/per-contract-cost live under `legs[0]`, not as
- * top-level fields, and the position carries NO option contract (OCC)
- * symbol anywhere — both the top-level `symbol` and the leg's own `symbol`
- * are just the underlying ticker. `occSymbol()` reconstructs the OCC symbol
- * from strike+expiration+type+underlying for snapshot-quote lookups. Every
- * numeric field from Webull is a string; parseFloat throughout.
+ * Shapes handled:
+ * - A single-leg option position (CONFIRMED LIVE 2026-09-09): top-level
+ *   instrument_type OPTION, strike/expiry/type/cost under legs[0].
+ * - A plain stock position: instrument_type EQUITY, no legs (or one stock leg).
+ * - A COMBINED stock + covered-call position. FOUND 2026-11-16: once the
+ *   wheel held 500 assigned shares and sold 5 calls, the broker stopped
+ *   reporting a separate EQUITY position. The old code then saw shares=0,
+ *   read the STOCK leg (legs[0]) as the option, built the snapshot symbol
+ *   "NVDA", and every tick crashed on 417 INVALID_SYMBOL (51 failed runs on
+ *   11-16/11-17). Each leg is now classified on its own, and a combined
+ *   position's top-level cost_price (a blend of stock and option) is never
+ *   used as either the stock cost basis or the option credit.
+ *
+ * The exact field layout of the combined position has NOT been seen
+ * directly (the sandbox isn't reachable from where this was written), so
+ * anything ambiguous goes into `problems` instead of being guessed.
+ */
+export function parseWheelPositions(positions: Position[], symbol: string): ParsedPositions {
+  const problems: string[] = [];
+  let shares = 0;
+  let costBasis: number | null = null;
+  const options: OpenOption[] = [];
+
+  const mine = positions.filter(
+    (p) => p.symbol === symbol || (p.legs ?? []).some((l) => l.symbol === symbol)
+  );
+
+  for (const p of mine) {
+    const posQty = num(p.quantity);
+    if (posQty === null || posQty === 0) continue;
+    const legs = p.legs ?? [];
+    const multiLeg = legs.length > 1;
+
+    if (legs.length === 0) {
+      const t = String(p.instrument_type ?? "").toUpperCase();
+      if (t === "EQUITY" || t === "STOCK") {
+        shares += posQty;
+        costBasis = num(p.cost_price);
+      } else {
+        problems.push(`position with no legs and instrument_type ${p.instrument_type}`);
+      }
+      continue;
+    }
+
+    for (const leg of legs) {
+      // Leg quantity: the leg's own field when present; a single-leg
+      // position's leg shares the position's quantity; otherwise the
+      // position (combo) quantity times the leg ratio (stock legs of a
+      // covered-call combo usually carry ratio 100).
+      let qty = num(leg.quantity);
+      if (qty === null && !multiLeg) qty = posQty;
+      if (qty === null && num(leg.ratio) !== null) qty = posQty * (num(leg.ratio) as number);
+
+      if (isOptionLeg(leg)) {
+        const optionType = leg.option_type;
+        const expiration = leg.option_expire_date ?? "";
+        const strike = num(leg.option_exercise_price);
+        if ((optionType !== "PUT" && optionType !== "CALL") || !/^\d{4}-\d{2}-\d{2}$/.test(expiration) || strike === null) {
+          problems.push(`option leg missing type/expiry/strike`);
+          continue;
+        }
+        if (qty === null) qty = multiLeg ? posQty : null;
+        if (qty === null) {
+          problems.push(`option leg without a quantity`);
+          continue;
+        }
+        // Credit per contract: the leg's own cost; a single-leg position may
+        // also carry it at top level. Never a multi-leg combo's blended cost.
+        const credit = num(leg.cost) ?? (multiLeg ? null : num(p.cost_price));
+        options.push({
+          optionSymbol: occSymbol(symbol, expiration, optionType, strike),
+          strike,
+          expiration,
+          optionType,
+          contracts: Math.abs(qty),
+          creditPerContract: credit === null ? null : Math.abs(credit),
+        });
+      } else {
+        if (!multiLeg && String(p.instrument_type ?? "").toUpperCase() === "OPTION") {
+          problems.push(`OPTION position whose only leg has no option fields`);
+          continue;
+        }
+        if (qty === null) {
+          problems.push(`stock leg without a quantity (combo quantity ${p.quantity}, no leg quantity or ratio)`);
+          continue;
+        }
+        shares += qty;
+        const legCost = num(leg.cost) ?? num(leg.cost_price) ?? (multiLeg ? null : num(p.cost_price));
+        if (legCost === null) problems.push(`stock leg without a cost basis`);
+        else costBasis = legCost;
+      }
+    }
+  }
+
+  if (options.length > 1) problems.push(`${options.length} open option legs; the wheel expects at most one`);
+  if (shares < 0) problems.push(`negative share count ${shares}`);
+
+  return { shares, costBasis, openOption: options.length === 1 ? options[0] : null, problems };
+}
+
+/**
+ * Rebuilds WheelState from live broker positions. Every numeric field from
+ * Webull is a string; parseWheelPositions() handles the shapes.
+ *
+ * FAILS CLOSED: if the positions can't be read with confidence, this throws
+ * with the raw positions in the message, so the run goes red, the
+ * supervisor alerts, and the log shows the exact shape — instead of
+ * returning a guess that could, for example, show "no option, no shares"
+ * and make tick() sell five new puts on top of positions it can't see.
  */
 export async function reconcile(client: WebullClient, accountId: string, symbol: string): Promise<WheelState> {
   const cumulativePremium = loadCumulativePremium();
   const positions = await getPositions(client, accountId);
-
-  const sharePosition = positions.find(
-    (p) => p.instrument_type === "EQUITY" && p.symbol === symbol && parseFloat(p.quantity) > 0
-  );
-  const shares = sharePosition ? parseFloat(sharePosition.quantity) : 0;
-  const costBasis = sharePosition && sharePosition.cost_price ? parseFloat(sharePosition.cost_price) : null;
-
-  const optionPosition = positions.find(
-    (p) => p.instrument_type === "OPTION" && p.symbol === symbol && Math.abs(parseFloat(p.quantity)) > 0
-  );
-
-  let openOption: OpenOption | null = null;
-  if (optionPosition) {
-    const leg = optionPosition.legs?.[0];
-    const optionType = (leg?.option_type as "PUT" | "CALL" | undefined) ?? "PUT";
-    const expiration = leg?.option_expire_date ?? "";
-    const strike = leg?.option_exercise_price ? parseFloat(leg.option_exercise_price) : NaN;
-    const creditRaw = optionPosition.cost_price ?? leg?.cost;
-
-    openOption = {
-      optionSymbol: expiration && !Number.isNaN(strike) ? occSymbol(symbol, expiration, optionType, strike) : symbol,
-      strike,
-      expiration,
-      optionType,
-      contracts: Math.abs(parseFloat(optionPosition.quantity)),
-      creditPerContract: creditRaw ? parseFloat(creditRaw) : null,
-    };
+  const parsed = parseWheelPositions(positions, symbol);
+  if (parsed.problems.length > 0) {
+    const raw = JSON.stringify(positions.filter((p) => p.symbol === symbol));
+    throw new Error(`reconcile: can't read ${symbol} positions safely (${parsed.problems.join("; ")}). Raw: ${raw}`);
   }
+  const { shares, costBasis, openOption } = parsed;
 
   const stage: Stage = shares > 0 ? "CALL" : "PUT";
 
