@@ -162,6 +162,25 @@ export function parseWheelPositions(positions: Position[], symbol: string): Pars
     if (posQty === null || posQty === 0) continue;
     const legs = p.legs ?? [];
     const multiLeg = legs.length > 1;
+    const coveredStock = String(p.option_strategy ?? "").toUpperCase() === "COVERED_STOCK" && legs.length === 2;
+    const optLeg = legs.find(isOptionLeg);
+    const deliverable = num(optLeg?.option_contract_deliverable) ?? num(optLeg?.option_contract_multiplier) ?? 100;
+    if (coveredStock) {
+      // Sanity check against the combo's total cost: shares x stock cost
+      // minus contracts x 100 x call credit (2026-11-18: 500 x 193.84 -
+      // 5 x 100 x 0.56 = 96,640, exactly the reported cost).
+      const stockLeg = legs.find((l) => !isOptionLeg(l));
+      const total = num(p.cost);
+      const sc = num(stockLeg?.cost);
+      const oc = num(optLeg?.cost);
+      if (total !== null && sc !== null && oc !== null) {
+        const expected = posQty * deliverable * sc - posQty * deliverable * Math.abs(oc);
+        if (Math.abs(expected - total) > Math.max(1, Math.abs(total) * 0.001)) {
+          problems.push(`COVERED_STOCK cost check failed: expected ${expected.toFixed(2)}, broker says ${total}`);
+          continue;
+        }
+      }
+    }
 
     if (legs.length === 0) {
       const t = String(p.instrument_type ?? "").toUpperCase();
@@ -182,6 +201,14 @@ export function parseWheelPositions(positions: Position[], symbol: string): Pars
       let qty = num(leg.quantity);
       if (qty === null && !multiLeg) qty = posQty;
       if (qty === null && num(leg.ratio) !== null) qty = posQty * (num(leg.ratio) as number);
+      // CONFIRMED LIVE 2026-11-18: a covered call comes back as ONE position,
+      // option_strategy "COVERED_STOCK", quantity "5" (= number of covered
+      // units), legs [EQUITY, OPTION] with NO per-leg quantity or ratio. Each
+      // unit is one short call plus option_contract_deliverable (100) shares.
+      // The position-level `cost` cross-check below confirms the reading.
+      if (qty === null && coveredStock) {
+        qty = isOptionLeg(leg) ? -posQty : posQty * deliverable;
+      }
 
       if (isOptionLeg(leg)) {
         const optionType = leg.option_type;
