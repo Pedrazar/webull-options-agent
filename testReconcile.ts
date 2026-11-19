@@ -103,6 +103,21 @@ test("the old misread (stock leg first, no option fields) never yields symbol 'N
   assert.ok(r.problems.length > 0);
 });
 
+test("REAL 2026-11-18 COVERED_STOCK position (raw from the failed run's log)", () => {
+  const raw = JSON.parse(`[{"currency":"USD","quantity":"5","cost":"96640.00","proportion":"1.0000","legs":[{"symbol":"NVDA","cost":"193.84","proportion":"0.9978","leg_id":"A5JM0683VHRI86B3IQ8TK81FK8","instrument_type":"EQUITY","last_price":"157.72","unrealized_profit_loss":"-18060.00","day_profit_loss":"1140.00","day_realized_profit_loss":"0.00"},{"symbol":"NVDA","cost":"0.56","proportion":"0.0022","leg_id":"A5JM0683VHRI86B3IQ8TK81FK8","instrument_type":"OPTION","last_price":"0.35","unrealized_profit_loss":"105.00","day_profit_loss":"70.00","day_realized_profit_loss":"0.00","option_type":"CALL","option_expire_date":"2026-12-11","option_exercise_price":"215","option_contract_multiplier":"100","option_contract_deliverable":"100","expiration_type":"PM"}],"position_id":"A5JM0683VHRI86B3IQ8TK81FK8","symbol":"NVDA","option_strategy":"COVERED_STOCK","instrument_type":"OPTION","cost_price":"193.28","last_price":"157.37","market_value":"78685.00","unrealized_profit_loss":"-17955.00","unrealized_profit_loss_rate":"-0.1858","day_profit_loss":"1210.00","day_realized_profit_loss":"0.00"}]`) as Position[];
+  const r = parseWheelPositions([...raw, spyCall], "NVDA");
+  assert.deepStrictEqual(r.problems, []);
+  assert.strictEqual(r.shares, 500);
+  assert.strictEqual(r.costBasis, 193.84);
+  assert.strictEqual(r.openOption?.optionSymbol, "NVDA261211C00215000");
+  assert.strictEqual(r.openOption?.contracts, 5);
+  assert.strictEqual(r.openOption?.creditPerContract, 0.56);
+  // A cost that doesn't add up is refused.
+  const bad = JSON.parse(JSON.stringify(raw));
+  bad[0].cost = "50000.00";
+  assert.ok(parseWheelPositions(bad, "NVDA").problems.length > 0);
+});
+
 test("nothing held", () => {
   const r = parseWheelPositions([spyCall], "NVDA");
   assert.deepStrictEqual(r, { shares: 0, costBasis: null, openOption: null, problems: [] });

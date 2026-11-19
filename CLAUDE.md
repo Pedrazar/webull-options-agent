@@ -41,6 +41,19 @@ Task Scheduler jobs were then registered the same day. **See the
 2026-09-09 status update below for what happened on the first real
 scheduled run** — a real fill, and a same-day bugfix.
 
+## Status update — 2026-11-18 (covered-call shape confirmed live)
+
+The fail-closed reconcile from 11-17 did its job: the first tick refused
+to act and logged the raw position. **CONFIRMED LIVE shape**: one
+position, `option_strategy: "COVERED_STOCK"`, `instrument_type: "OPTION"`,
+`quantity: "5"` (covered units), `cost` = total ($96,640), `cost_price`
+blended ($193.28), legs `[EQUITY {cost 193.84}, OPTION {CALL 215
+2026-12-11, cost 0.56, option_contract_deliverable 100}]` with **no
+per-leg quantity or ratio**. `parseWheelPositions()` now reads it as
+units x deliverable shares and -units contracts, cross-checked against
+the total `cost` (refuses if it doesn't add up). Raw fixture in
+`testReconcile.ts`.
+
 ## Status update — 2026-11-17 (covered-call position misread, every tick crashing)
 
 The 2026-11-13 NVDA 195 put was assigned (500 shares, cost basis $193.84)
